@@ -1,18 +1,43 @@
 data/raw/creditcard.csv
-# Raw & processed datasets
+
+# =========================
+# Python
+# =========================
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+.env
+.pytest_cache/
+
+# =========================
+# Data (RAW + PROCESSED)
+# =========================
 data/raw/
 data/processed/
 models/data/
+models/data/processed/
 
-# CSV outputs
+# Ignore ALL CSV files (datasets, outputs, predictions)
 *.csv
 
-# Model artifacts
+# =========================
+# Model Artifacts
+# =========================
 *.joblib
 *.pkl
 
-# Python
-__pycache__/
-.venv/
-.env
+# =========================
+# OS / Editor junk
+# =========================
+.DS_Store
+.idea/
+.vscode/
+
+# =========================
+# Logs & temp
+# =========================
+*.log
+
 
