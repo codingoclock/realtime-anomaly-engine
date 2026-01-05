@@ -1,0 +1,18 @@
+# Core
+numpy
+pandas
+scikit-learn
+joblib
+
+# Backend
+fastapi
+uvicorn
+
+# Dashboard
+streamlit
+
+# Testing
+pytest
+
+# Utilities
+python-dateutil
