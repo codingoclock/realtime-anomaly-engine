@@ -10,6 +10,7 @@ uvicorn
 
 # Dashboard
 streamlit
+requests
 
 # Testing
 pytest
