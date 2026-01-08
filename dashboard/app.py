@@ -17,6 +17,12 @@ import pandas as pd
 import requests
 import streamlit as st
 
+# Backend configuration (cloud-safe)
+API_BASE_URL = st.secrets.get(
+    "API_URL",
+    "http://127.0.0.1:8000"  # fallback for local development
+)
+
 
 # Page config
 st.set_page_config(page_title="Realtime Anomaly Dashboard", layout="wide")
@@ -27,7 +33,8 @@ st.markdown("Monitoring recent anomalies and their scores")
 
 # Sidebar: configuration
 st.sidebar.header("Configuration")
-base_url = st.sidebar.text_input("Backend base URL", value="http://localhost:8000")
+default_backend = st.secrets.get("API_BASE_URL", "http://127.0.0.1:8000")
+base_url = st.sidebar.text_input("Backend base URL", value=API_BASE_URL)
 limit = st.sidebar.number_input("Max anomalies to fetch", min_value=1, max_value=1000, value=100, step=1)
 since_ts = st.sidebar.text_input("Since timestamp (ISO8601, optional)", value="")
 auto_refresh = st.sidebar.checkbox("Auto-refresh", value=True)
@@ -39,14 +46,15 @@ def _fetch_anomalies(base: str, limit: int, since: Optional[str]) -> List[Dict[s
     """Fetch anomalies from backend and return parsed JSON list.
 
     Uses a short cache to avoid duplicate calls during a single page render.
-    """
+    """ 
     url = f"{base.rstrip('/')}/anomalies"
     params: Dict[str, Any] = {"limit": int(limit)}
     if since:
         params["since_ts"] = since
 
     try:
-        resp = requests.get(url, params=params, timeout=5)
+        # resp = requests.get(url, params=params, timeout=5)
+        resp = requests.get(f"{API_BASE_URL}/anomalies")
         resp.raise_for_status()
         return resp.json()
     except requests.RequestException as exc:  # pragma: no cover - network I/O
