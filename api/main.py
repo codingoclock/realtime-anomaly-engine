@@ -15,7 +15,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import JSONResponse
 
 from storage import database
-
+import os
 
 app = FastAPI(title="Realtime Anomaly API")
 
@@ -54,7 +54,12 @@ async def get_anomalies(
 
     # Query the database
     try:
-        results = database.fetch_recent_anomalies(since_ts=since_iso, limit=limit)
+        db_path = os.environ.get("DB_PATH")
+        results = database.fetch_recent_anomalies(
+        db_path=db_path,
+        since_ts=since_iso,
+        limit=limit,
+        )
     except Exception as exc:  # pragma: no cover - defensive error handling
         raise HTTPException(status_code=500, detail=f"Error querying database: {exc}")
 

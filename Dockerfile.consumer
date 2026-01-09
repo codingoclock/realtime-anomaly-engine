@@ -1,0 +1,28 @@
+FROM python:3.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/app
+
+WORKDIR /app
+
+# Upgrade pip for better dependency resolution
+RUN pip install --no-cache-dir --upgrade pip
+
+# Copy requirements and install dependencies (leverages Docker layer caching)
+COPY requirements.txt /app/requirements.txt
+RUN pip install --no-cache-dir -r /app/requirements.txt
+
+# Copy entire project source
+COPY . /app
+
+# Create non-root user for security
+RUN adduser --disabled-password app \
+ && mkdir -p /data \
+ && chown -R app:app /data
+
+USER app
+
+# Start the consumer service continuously
+ENTRYPOINT ["python", "consumer/consumer.py"]
+CMD ["--interval", "1.0"]

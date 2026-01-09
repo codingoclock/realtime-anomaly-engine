@@ -1,0 +1,27 @@
+version: "3.9"
+
+services:
+  consumer:
+    image: anomaly-consumer
+    container_name: anomaly-consumer
+    environment:
+      - DB_PATH=/data/anomalies.db
+    volumes:
+      - anomaly_data:/data
+    restart: unless-stopped
+
+  api:
+    image: anomaly-api
+    container_name: anomaly-api
+    ports:
+      - "8000:8000"
+    environment:
+      - DB_PATH=/data/anomalies.db
+    volumes:
+      - anomaly_data:/data
+    depends_on:
+      - consumer
+    restart: unless-stopped
+
+volumes:
+  anomaly_data:

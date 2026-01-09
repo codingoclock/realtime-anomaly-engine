@@ -15,7 +15,7 @@ import argparse
 import json
 import time
 from typing import Optional
-
+import os
 # Import with robust fallback so the script works when run directly
 try:
     from producer.event_generator import EventGenerator
@@ -104,7 +104,9 @@ def main() -> None:
     try:
         from storage.database import init_db, insert_processed_event
 
-        init_db(args.db_path)
+        db_path = args.db_path or os.environ.get("DB_PATH")
+        init_db(db_path)
+
         _insert_processed_event = insert_processed_event
     except Exception as exc:
         _insert_processed_event = None
@@ -167,7 +169,7 @@ def main() -> None:
                         features,
                         anomaly_score if anomaly_score is not None else float('nan'),
                         bool(is_anomaly) if is_anomaly is not None else False,
-                        db_path=args.db_path,
+                        db_path=db_path,
                         processed_ts=None,
                     )
                 except Exception as exc:

@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environments
+.venv/
+
+# Git
+.git/
+.gitignore
+
+# Local data & artifacts
+data/
+models/
+*.joblib
+*.pkl
+*.csv
+
+# Logs
+*.log
+
+# IDE junk
+.vscode/
+.idea/
+.DS_Store
+
+# Tests (optional, speeds up builds)
+tests/

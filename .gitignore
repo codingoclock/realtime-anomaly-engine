@@ -40,4 +40,41 @@ models/data/processed/
 # =========================
 *.log
 
+# =========================
+# Docker / Runtime Artifacts
+# =========================
+
+# SQLite databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Docker volumes (local binds, if any)
+data/
+data/**
+
+# Docker runtime state
+docker-data/
+docker-volume/
+
+# Logs generated inside containers
+*.log
+
+# =========================
+# Environment & Secrets
+# =========================
+.env
+.env.*
+
+# =========================
+# Python virtualenv
+# =========================
+.venv/
+
+# =========================
+# OS / Editor junk
+# =========================
+.DS_Store
+.vscode/
+.idea/
 

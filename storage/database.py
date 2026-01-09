@@ -33,6 +33,9 @@ def _ensure_dir_for_db(path: str) -> None:
     if dirpath and not os.path.exists(dirpath):
         os.makedirs(dirpath, exist_ok=True)
 
+# NOTE:
+# Database path is injected by callers (e.g., via DB_PATH env var in Docker).
+# This module intentionally does not read environment variables directly.
 
 def init_db(db_path: Optional[str] = None) -> None:
     """Initialize the SQLite database and required tables.
@@ -174,7 +177,7 @@ def fetch_recent_anomalies(db_path: Optional[str] = None, since_ts: Optional[str
             results.append(
                 {
                     "anomaly_row_id": anomaly_id,
-                    "anomaly_score": float(score),
+                    "anomaly_score": float(score) if score is not None else None,
                     "is_anomaly": bool(is_anom),
                     "processed_timestamp": processed_ts,
                     "event": event,

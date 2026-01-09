@@ -1,0 +1,29 @@
+
+FROM python:3.11-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+	PYTHONUNBUFFERED=1
+
+WORKDIR /app
+
+# Upgrade pip first for better dependency resolution
+RUN pip install --no-cache-dir --upgrade pip
+
+# Copy only requirements first to leverage Docker layer caching
+COPY requirements.txt /app/requirements.txt
+
+# Install Python dependencies (no cache to keep image small)
+RUN pip install --no-cache-dir -r /app/requirements.txt
+
+# Copy application source
+COPY . /app
+
+# (Optional) create a non-root user for improved security
+RUN adduser --disabled-password --gecos '' app || true && chown -R app:app /app
+USER app
+
+EXPOSE 8000
+
+# Start Uvicorn via the Python module to match your runtime requirement
+CMD ["python", "-m", "uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+
