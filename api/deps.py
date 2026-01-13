@@ -16,10 +16,9 @@ from storage import database
 def get_db_path() -> str:
     """Return the database path for the application.
 
-    Reads the `ANOMALY_DB_PATH` environment variable if present; otherwise
-    falls back to `storage.database.DEFAULT_DB_PATH`.
+    Returns the bundled default (local file) path for the database.
     """
-    return os.environ.get("ANOMALY_DB_PATH", database.DEFAULT_DB_PATH)
+    return database.DEFAULT_DB_PATH
 
 
 def init_db(path: Optional[str] = None) -> None:

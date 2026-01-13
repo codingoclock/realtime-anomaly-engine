@@ -9,7 +9,7 @@ Computed features (per event):
 - transaction_amount: the raw transaction amount (INR)
 - rolling_mean_amount_per_user: running mean amount for the user (updated online)
 - transaction_count_last_1_min: number of transactions by the same user in the last 60 seconds
-- time_since_last_transaction_seconds: seconds since the previous transaction for this user (None for first)
+- time_since_last_transaction_seconds: seconds since the previous transaction for this user (0.0 for first)
 
 Design notes:
 - Uses Python stdlib only (collections.deque) for efficient sliding-window ops
@@ -76,14 +76,14 @@ class FeaturePipeline:
         while rt and rt[0] < cutoff:
             rt.popleft()
 
-    def process_event(self, event: Dict[str, object]) -> Dict[str, Optional[float]]:
+    def process_event(self, event: Dict[str, object]) -> Dict[str, float | int]:
         """Process a single event and return computed features.
 
         Returns a dict with these keys:
           - transaction_amount (float)
           - rolling_mean_amount_per_user (float)
           - transaction_count_last_1_min (int)
-          - time_since_last_transaction_seconds (float or None)
+          - time_since_last_transaction_seconds (float)
 
         This function updates internal state for the corresponding `user_id`.
         """
@@ -108,9 +108,9 @@ class FeaturePipeline:
             state = UserState()
             self.users[user_id] = state
 
-        # Compute time since last transaction (None if first event)
+        # Compute time since last transaction (0.0 if first event)
         if state.last_timestamp is None:
-            time_since_last = None
+            time_since_last = 0.0
         else:
             delta = now - state.last_timestamp
             time_since_last = delta.total_seconds()
@@ -128,12 +128,20 @@ class FeaturePipeline:
         # Update last_timestamp
         state.last_timestamp = now
 
+        # Build features with explicit numeric types
         features = {
-            'transaction_amount': amount,
-            'rolling_mean_amount_per_user': rolling_mean,
-            'transaction_count_last_1_min': len(state.recent_timestamps),
-            'time_since_last_transaction_seconds': None if time_since_last is None else round(time_since_last, 3),
+            'transaction_amount': float(amount),
+            'rolling_mean_amount_per_user': float(rolling_mean),
+            'transaction_count_last_1_min': int(len(state.recent_timestamps)),
+            'time_since_last_transaction_seconds': float(round(time_since_last, 3)),
         }
+
+        # Final validation: no feature should be None and all values must be numeric
+        for k, v in features.items():
+            if v is None:
+                raise AssertionError(f"Feature '{k}' is None")
+            if not isinstance(v, (int, float)):
+                raise AssertionError(f"Feature '{k}' is not numeric: {type(v).__name__}")
 
         return features
 

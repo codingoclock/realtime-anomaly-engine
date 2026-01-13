@@ -4,9 +4,7 @@ data/raw/creditcard.csv
 # Python
 # =========================
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
+*.py[cod]
 .venv/
 .env
 .pytest_cache/
@@ -16,8 +14,7 @@ __pycache__/
 # =========================
 data/raw/
 data/processed/
-models/data/
-models/data/processed/
+data/
 
 # Ignore ALL CSV files (datasets, outputs, predictions)
 *.csv
@@ -25,6 +22,7 @@ models/data/processed/
 # =========================
 # Model Artifacts
 # =========================
+models/*.joblib
 *.joblib
 *.pkl
 
@@ -38,26 +36,6 @@ models/data/processed/
 # =========================
 # Logs & temp
 # =========================
-*.log
-
-# =========================
-# Docker / Runtime Artifacts
-# =========================
-
-# SQLite databases
-*.db
-*.sqlite
-*.sqlite3
-
-# Docker volumes (local binds, if any)
-data/
-data/**
-
-# Docker runtime state
-docker-data/
-docker-volume/
-
-# Logs generated inside containers
 *.log
 
 # =========================

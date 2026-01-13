@@ -34,8 +34,7 @@ def _ensure_dir_for_db(path: str) -> None:
         os.makedirs(dirpath, exist_ok=True)
 
 # NOTE:
-# Database path is injected by callers (e.g., via DB_PATH env var in Docker).
-# This module intentionally does not read environment variables directly.
+# Database path is injected by callers. This module intentionally does not read environment variables directly.
 
 def init_db(db_path: Optional[str] = None) -> None:
     """Initialize the SQLite database and required tables.

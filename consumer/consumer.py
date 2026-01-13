@@ -1,13 +1,13 @@
 """Simple consumer script that generates transactions and computes features.
 
-- Initializes `EventGenerator` once and `FeaturePipeline` once
-- Generates events locally (no streaming system)
-- For each event: compute features and print the raw event and features
-- Rate is controlled via `time.sleep(interval)` and `--count` for finite runs
-- Graceful shutdown via KeyboardInterrupt (Ctrl+C)
+- Initializes `EventGenerator` and `FeaturePipeline` once
+- Loads `IsolationForestPredictor` at startup (if available)
+- For each generated event: compute features, predict anomaly_score & is_anomaly, and print them
+- No database persistence
+- Exits after 50 events (safety limit)
 
 Usage:
-    python consumer/consumer.py --interval 1.0 --count 0
+    python consumer/consumer.py
 """
 from __future__ import annotations
 
@@ -17,6 +17,8 @@ import time
 from typing import Optional
 import os
 # Import with robust fallback so the script works when run directly
+
+
 try:
     from producer.event_generator import EventGenerator
     from consumer.feature_pipeline import FeaturePipeline
@@ -52,14 +54,76 @@ except Exception:
     FeaturePipeline = fp_mod.FeaturePipeline
 
 
+def _explain_anomaly(features: dict) -> list:
+    """Return a short list of human-readable explanations derived from feature values.
+
+    Explanations are diagnostic only and do not affect model predictions.
+    Operates solely on the feature dict returned by FeaturePipeline.
+    """
+    exps = []
+    try:
+        amt = float(features.get('transaction_amount', float('nan')))
+    except Exception:
+        amt = float('nan')
+    try:
+        mean = float(features.get('rolling_mean_amount_per_user', float('nan')))
+    except Exception:
+        mean = float('nan')
+    try:
+        count = int(features.get('transaction_count_last_1_min', 0))
+    except Exception:
+        count = 0
+    try:
+        tdelta = float(features.get('time_since_last_transaction_seconds', float('nan')))
+    except Exception:
+        tdelta = float('nan')
+
+    # Rapid repeat transactions
+    if not (tdelta != tdelta):  # check for NaN
+        if tdelta <= 5.0:
+            exps.append('very small time_since_last_transaction_seconds')
+        elif tdelta <= 30.0:
+            exps.append('small time_since_last_transaction_seconds')
+        elif tdelta > 3600.0:
+            exps.append('very long time_since_last_transaction_seconds')
+
+    # Bursty activity
+    if count >= 5:
+        exps.append('unusually high transaction_count_last_1_min')
+    elif count >= 3:
+        exps.append('elevated transaction_count_last_1_min')
+
+    # Amount vs rolling mean
+    if mean == mean and mean > 0.0 and amt == amt:
+        rel = abs(amt - mean) / mean
+        if rel > 3.0:
+            exps.append('large deviation between transaction_amount and rolling_mean_amount_per_user')
+        elif rel > 1.0:
+            exps.append('notable deviation between transaction_amount and rolling_mean_amount_per_user')
+    else:
+        # If mean is not available or zero, check absolute amount
+        if amt == amt and amt >= 50000.0:
+            exps.append('very large transaction_amount')
+        elif amt == amt and amt >= 5000.0:
+            exps.append('large transaction_amount')
+
+    # Fallback explanation
+    if not exps:
+        exps.append('anomalous pattern detected')
+
+    # Keep explanations concise and deterministic order
+    return exps
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Local consumer: generate events and compute features")
     parser.add_argument("--interval", type=float, default=1.0, help="Seconds to sleep between events")
-    parser.add_argument("--count", type=int, default=0, help="Number of events to process (0 = infinite)")
+    parser.add_argument("--count", type=int, default=50, help="Number of events to process (max 50)")
     parser.add_argument("--seed", type=int, default=None, help="Optional RNG seed for deterministic output")
-    parser.add_argument("--model-path", type=str, default=None, help="Path to IsolationForest .joblib model (optional)")
-    parser.add_argument("--threshold", type=float, default=0.0, help="Anomaly score threshold; sample is anomalous when score >= threshold")
-    parser.add_argument("--fill-missing-with-zero", action="store_true", help="If set, missing model features will be filled with 0.0 when building input vector from pipeline features")
+    # Default model path points to top-level `models/isolation_forest.joblib`
+    default_model_path = os.path.join(os.path.dirname(__file__), "..", "models", "isolation_forest.joblib")
+    parser.add_argument("--model-path", type=str, default=default_model_path, help="Path to IsolationForest .joblib model (defaults to models/isolation_forest.joblib)")
+    parser.add_argument("--threshold", type=float, default= 0.45, help="Anomaly score threshold; sample is anomalous when score >= threshold")
 
     # Alert-related arguments
     parser.add_argument("--alert-score-threshold", type=float, default=None, help="Score threshold to trigger score-based alerts")
@@ -67,25 +131,27 @@ def main() -> None:
     parser.add_argument("--rate-limit", type=int, default=10, help="Number of anomalies allowed in rate window before alerting")
     parser.add_argument("--rate-window", type=int, default=60, help="Rate window size in seconds")
     parser.add_argument("--rate-scope", choices=["global", "user"], default="global", help="Scope for rate-based alerts: global or user")
-    parser.add_argument("--db-path", type=str, default=None, help="Optional path to sqlite DB file for persistence")
 
     args = parser.parse_args()
 
     gen = EventGenerator(seed=args.seed)
     pipeline = FeaturePipeline()
 
-    # Load predictor once at startup. If loading fails we continue without scoring
-    try:
-        from models.predict import IsolationForestPredictor
+    # Enforce maximum of 50 events per run (safety limit)
+    if args.count <= 0 or args.count > 50:
+        args.count = 50
 
+    # Load predictor once at startup. Failure to load is fatal (fail loudly)
+    from models.predict import IsolationForestPredictor
+
+    try:
         predictor = IsolationForestPredictor(model_path=args.model_path)
         predictor_feature_order = getattr(predictor, "feature_order", None)
+        print("Loaded predictor; feature_order=", predictor_feature_order)
     except Exception as exc:
-        predictor = None
-        predictor_feature_order = None
-        print("Warning: Could not load predictor; anomaly scoring will be disabled:", type(exc).__name__, exc)
+        raise RuntimeError(f"Failed to load IsolationForestPredictor from {args.model_path}: {type(exc).__name__}: {exc}") from exc
 
-    # Initialize AlertManager
+    # Initialize AlertManager (optional)
     try:
         from alerts.alert_manager import AlertManager
 
@@ -100,18 +166,6 @@ def main() -> None:
         alert_manager = None
         print("Warning: Could not initialize AlertManager; alerts disabled:", type(exc).__name__, exc)
 
-    # Initialize DB persistence (optional). If DB init fails we continue without persistence.
-    try:
-        from storage.database import init_db, insert_processed_event
-
-        db_path = args.db_path or os.environ.get("DB_PATH")
-        init_db(db_path)
-
-        _insert_processed_event = insert_processed_event
-    except Exception as exc:
-        _insert_processed_event = None
-        print("Warning: Persistence disabled (DB init failed):", type(exc).__name__, exc)
-
     print(f"Starting consumer: interval={args.interval}s, count={'infinite' if args.count<=0 else args.count}")
     processed = 0
 
@@ -120,60 +174,43 @@ def main() -> None:
             event = gen.generate_transaction()
             features = pipeline.process_event(event)
 
-            # Prepare and perform anomaly scoring if predictor is available
-            anomaly_score = None
-            is_anomaly = None
+            # Perform anomaly scoring and print exact failure reason if it fails
+            try:
+                anomaly_score, is_anomaly = predictor.predict(features, threshold=args.threshold)
+                # Validate outputs
+                if anomaly_score is None:
+                    raise RuntimeError("Predictor returned None for anomaly_score")
+                if is_anomaly is None:
+                    raise RuntimeError("Predictor returned None for is_anomaly flag")
+            except KeyError as exc:  # missing features
+                print("Anomaly scoring failed: Missing required feature(s):", exc.args)
+                anomaly_score = None
+                is_anomaly = None
+            except Exception as exc:
+                # Print exact exception type and message (do not suppress silently)
+                print("Anomaly scoring failed:", type(exc).__name__, exc)
+                anomaly_score = None
+                is_anomaly = None
 
-            if predictor is not None:
-                if predictor_feature_order is not None:
-                    input_dict = {}
-                    missing = []
-                    for name in predictor_feature_order:
-                        if name in features:
-                            input_dict[name] = features[name]
-                        else:
-                            missing.append(name)
-                            input_dict[name] = 0.0 if args.fill_missing_with_zero else None
-
-                    if not args.fill_missing_with_zero and any(v is None for v in input_dict.values()):
-                        # Skip scoring if required features are missing and we're not filling
-                        print("FEATURES:", json.dumps(features, ensure_ascii=False))
-                        print("Anomaly scoring skipped: predictor expects features", predictor_feature_order)
-                    else:
-                        if missing and args.fill_missing_with_zero:
-                            print("Note: filling missing features with 0.0 for predictor:", missing)
-                        anomaly_score, is_anomaly = predictor.predict(input_dict, threshold=args.threshold)
-                else:
-                    try:
-                        anomaly_score, is_anomaly = predictor.predict(features, threshold=args.threshold)
-                    except Exception as exc:
-                        print("Anomaly scoring failed:", type(exc).__name__, exc)
-                        anomaly_score = None
-                        is_anomaly = None
-
-            # Print raw event, computed features, and anomaly results
-            print("EVENT:", json.dumps(event, ensure_ascii=False))
+            # Print summary: event id, features, and anomaly results
+            print(f"EVENT: id={event.get('transaction_id')} user={event.get('user_id')} amount={event.get('amount')}")
             print("FEATURES:", json.dumps(features, ensure_ascii=False))
-            print("ANOMALY_SCORE:", anomaly_score)
-            print("IS_ANOMALY:", is_anomaly)
+
+            if anomaly_score is None:
+                print("ANOMALY: scoring failed or unavailable")
+            else:
+                print(f"ANOMALY_SCORE: {anomaly_score:.6f} IS_ANOMALY: {is_anomaly}")
+
+                # If model flagged anomaly, provide short human-readable explanations derived only from features
+                if is_anomaly:
+                    explanations = _explain_anomaly(features)
+                    # Print each explanation on its own line for clarity
+                    for e in explanations:
+                        print("EXPLANATION:", e)
 
             # Pass to AlertManager if available and scoring was performed
             if alert_manager is not None and anomaly_score is not None and is_anomaly is not None:
                 alert_manager.check_and_alert(event, anomaly_score=anomaly_score, is_anomaly=is_anomaly)
-
-            # Persist processed event (non-fatal)
-            if _insert_processed_event is not None:
-                try:
-                    _insert_processed_event(
-                        event,
-                        features,
-                        anomaly_score if anomaly_score is not None else float('nan'),
-                        bool(is_anomaly) if is_anomaly is not None else False,
-                        db_path=db_path,
-                        processed_ts=None,
-                    )
-                except Exception as exc:
-                    print("Warning: DB insert failed (continuing):", type(exc).__name__, exc)
 
             processed += 1
             time.sleep(max(0.0, float(args.interval)))

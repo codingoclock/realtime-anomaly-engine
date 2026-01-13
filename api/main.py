@@ -54,11 +54,11 @@ async def get_anomalies(
 
     # Query the database
     try:
-        db_path = os.environ.get("DB_PATH")
+        db_path = "data/anomalies.db"
         results = database.fetch_recent_anomalies(
-        db_path=db_path,
-        since_ts=since_iso,
-        limit=limit,
+            db_path=db_path,
+            since_ts=since_iso,
+            limit=limit,
         )
     except Exception as exc:  # pragma: no cover - defensive error handling
         raise HTTPException(status_code=500, detail=f"Error querying database: {exc}")
