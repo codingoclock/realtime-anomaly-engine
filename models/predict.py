@@ -212,11 +212,11 @@ class IsolationForestPredictor:
         if not hasattr(self._model, "score_samples"):
             raise AttributeError("Loaded model does not implement `score_samples`")
 
-        # score_samples: higher => more normal. Negate to make anomaly-oriented
-        # score where larger means more anomalous. The default threshold is
-        # negative (e.g. -0.18) to reduce false positives while allowing rare
-        # high-risk events to be flagged.
-        raw = self._model.score_samples(X)
+        # Strip column names before calling sklearn so that callers using an
+        # explicit feature_order that doesn't match model.feature_names_in_ don't
+        # trigger sklearn's feature-name validation (we already ordered correctly).
+        X_arr = X.to_numpy() if hasattr(X, "to_numpy") else X
+        raw = self._model.score_samples(X_arr)
         anomaly_score = float(-raw.item())
 
         # Log anomaly score and threshold for visibility

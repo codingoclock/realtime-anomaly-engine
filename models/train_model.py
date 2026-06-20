@@ -31,7 +31,7 @@ from models.train_dataset import generate_feature_dataframe
 DEFAULT_OUTPUT = SCRIPT_DIR / "isolation_forest.joblib"
 
 
-def train_and_save(count: int = 5000, seed: int | None = None, output: str | Path = DEFAULT_OUTPUT) -> None:
+def train_and_save(count: int = 50000, seed: int | None = None, output: str | Path = DEFAULT_OUTPUT) -> None:
     df = generate_feature_dataframe(count=count, seed=seed)
 
     if df.empty:
@@ -64,7 +64,7 @@ def train_and_save(count: int = 5000, seed: int | None = None, output: str | Pat
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Train IsolationForest model from generated features")
-    parser.add_argument("--count", type=int, default=5000, help="Number of synthetic events to generate (default: 5000)")
+    parser.add_argument("--count", type=int, default=50000, help="Number of synthetic events to generate (default: 50000)")
     parser.add_argument("--seed", type=int, default=None, help="Optional RNG seed for reproducibility")
     parser.add_argument("--output", type=str, default=str(DEFAULT_OUTPUT), help="Output model path")
     args = parser.parse_args()
