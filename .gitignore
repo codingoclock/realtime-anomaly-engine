@@ -56,3 +56,5 @@ models/*.joblib
 .vscode/
 .idea/
 
+node_modules/
+frontend/dist/

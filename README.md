@@ -1,49 +1,50 @@
 # Realtime Anomaly Engine
 
-A real-time financial transaction anomaly detection system that simulates a production-grade fraud detection pipeline. It uses an unsupervised machine learning model (Isolation Forest) to flag suspicious transactions as they stream in, with a live analytics dashboard, REST API, SQLite persistence, and configurable alerting — all without requiring labeled training data.
+A production-grade real-time financial transaction anomaly detection system. Synthetic INR transactions flow through Apache Kafka, are scored by an Isolation Forest model, persisted to SQLite, and pushed live to a React analytics dashboard via WebSocket — no labeled fraud data required.
 
 ---
 
 ## Real-World Problem
 
-Payment fraud costs financial institutions billions annually. Traditional rule-based systems (e.g., "flag transactions above ₹50,000") are rigid and easy to bypass. This project demonstrates a more adaptive approach: train an unsupervised anomaly detection model on the *shape* of normal transaction behavior, then score every incoming event in real time. Suspicious patterns — unusually large amounts, rapid repeated transactions, sudden deviations from a user's spending average — are caught automatically, even if no explicit fraud label exists.
+Payment fraud costs financial institutions billions annually. Rule-based systems ("flag anything above ₹50,000") are rigid and easily bypassed. This project demonstrates an adaptive approach: train an unsupervised model on the *shape* of normal user behavior, then score every incoming transaction in real time. Suspicious patterns — unusually large amounts, rapid repeated transactions, sudden deviations from a user's spending average — are surfaced automatically without labels.
 
-The system is built around the Indian payments context: INR amounts, IST timestamps, and major Indian city locations, making it directly applicable to UPI/card fraud detection scenarios.
+Built around the Indian payments context: INR amounts, IST timestamps, and major Indian city locations. Directly applicable to UPI/card fraud detection.
 
 ---
 
 ## Architecture
 
 ```
-┌──────────────────────────────────────────────────────────────────┐
-│                      Realtime Anomaly Engine                     │
-└──────────────────────────────────────────────────────────────────┘
+EventGenerator (synthetic INR transactions)
+        │
+        ▼
+  Producer ──publishes──▶ Kafka "transactions" (4 partitions, keyed by user_id)
+                                 │
+                          Consumer reads it
+                                 │
+                     FeaturePipeline → IsolationForest
+                                 │
+                     Persist to SQLite (raw_events + features + anomalies)
+                                 │
+                     AlertManager (score + rate-based alerts)
+                                 │
+                     Publish to Kafka "scored-events"
+                                 │
+               FastAPI aiokafka background task
+                                 │  broadcast
+                    WebSocket /ws/anomalies
+                                 │
+              React Dashboard (Vite + Tailwind + Recharts)
+              └── Vercel-deployable static frontend
+```
 
-  ┌──────────────┐     ┌───────────────────┐     ┌───────────────────────┐
-  │   Producer   │────▶│     Consumer      │────▶│  Isolation Forest     │
-  │(EventGenerator│     │ (FeaturePipeline) │     │  Model (predict.py)   │
-  │  INR events) │     │  4 features/event │     │  anomaly_score+flag   │
-  └──────────────┘     └───────────────────┘     └──────────┬────────────┘
-                                                             │
-                             ┌───────────────────────────────┤
-                             │                               │
-                   ┌─────────▼──────────┐      ┌────────────▼───────────┐
-                   │   AlertManager     │      │   SQLite Storage       │
-                   │ Score + Rate rules │      │ raw_events / features  │
-                   │ global or per-user │      │     / anomalies        │
-                   └────────────────────┘      └────────────┬───────────┘
-                                                            │
-                                               ┌────────────▼───────────┐
-                                               │    FastAPI Backend      │
-                                               │  GET /anomalies         │
-                                               │  GET / (health)         │
-                                               └────────────┬───────────┘
-                                                            │
-                                               ┌────────────▼───────────┐
-                                               │  Streamlit Dashboard   │
-                                               │  Dark analytics UI     │
-                                               │  Auto-refresh 1s       │
-                                               └────────────────────────┘
+### Key data path
+
+Every transaction the producer publishes goes through this sequence — in under 100 ms end-to-end on a local machine:
+
+```
+event dict ──▶ 4 ML features ──▶ anomaly_score + is_anomaly flag
+          ──▶ SQLite row  ──▶ scored-events Kafka message ──▶ WS broadcast ──▶ dashboard
 ```
 
 ---
@@ -53,61 +54,62 @@ The system is built around the Indian payments context: INR amounts, IST timesta
 ```
 Realtime-anomaly-engine/
 │
-├── producer/                   # Synthetic event generation
-│   ├── event_generator.py      # EventGenerator class — produces realistic INR transactions
-│   └── producer.py
+├── config.py                   # Central env-var config (Kafka, DB, API)
+├── docker-compose.yml          # Single-broker Kafka KRaft + topic init
+├── requirements.txt
 │
-├── consumer/                   # Real-time feature computation + scoring
-│   ├── consumer.py             # Main loop: generate → featurize → predict → alert
-│   ├── feature_pipeline.py     # FeaturePipeline — incremental, per-user feature state
-│   └── models/                 # Local model copies for consumer-side inference
+├── producer/
+│   ├── producer.py             # Publishes events to Kafka (default) or stdout
+│   └── event_generator.py      # Synthetic INR transaction generator
 │
-├── models/                     # ML model training and inference
-│   ├── train_model.py          # Train IsolationForest and save as .joblib
-│   ├── train_dataset.py        # generate_feature_dataframe — builds training set
-│   ├── train.py / train_local.py
-│   ├── predict.py              # IsolationForestPredictor + predict_anomaly()
-│   ├── smoke_test_predict.py
+├── consumer/
+│   ├── consumer.py             # Kafka consumer → score → persist → republish
+│   └── feature_pipeline.py     # Real-time per-user feature engineering
+│
+├── models/
+│   ├── train_model.py          # Train IsolationForest (50k samples, save .joblib)
+│   ├── train_dataset.py        # Training data generator
+│   ├── predict.py              # IsolationForestPredictor wrapper
 │   └── isolation_forest.joblib # Trained model artifact
 │
 ├── alerts/
-│   └── alert_manager.py        # AlertManager — score-based and rate-based alerts
+│   └── alert_manager.py        # Score + rate-based console alerts
 │
 ├── storage/
-│   └── database.py             # SQLite helpers: init_db, insert_processed_event, fetch_recent_anomalies
+│   └── database.py             # SQLite: init_db, insert_processed_event, fetch_recent_anomalies
 │
 ├── api/
-│   ├── main.py                 # FastAPI app — GET / and GET /anomalies
-│   ├── schemas.py
-│   ├── deps.py
-│   └── websocket.py
+│   ├── main.py                 # FastAPI: GET /, GET /anomalies, WS /ws/anomalies
+│   ├── websocket.py            # ConnectionManager (broadcast to all WS clients)
+│   ├── schemas.py              # Pydantic: Event, AnomalyRecord, ScoredEvent
+│   └── deps.py                 # DB path dependency helpers
 │
-├── dashboard/
-│   └── app.py                  # Streamlit analytics dashboard (dark theme, Plotly charts)
+├── frontend/                   # React dashboard (Vite + Tailwind + Recharts)
+│   ├── package.json
+│   ├── vite.config.js          # Dev proxy: /api → :8000, /ws → :8000
+│   ├── tailwind.config.js
+│   ├── index.html
+│   └── src/
+│       ├── App.jsx             # Root component — state + layout
+│       ├── index.css           # Tailwind base + custom utilities
+│       ├── hooks/
+│       │   └── useWebSocket.js # Auto-reconnecting WS hook
+│       └── components/
+│           ├── Sidebar.jsx         # Navigation + session stats
+│           ├── Header.jsx          # Breadcrumb + live indicator
+│           ├── KPICard.jsx         # Metric card with mini sparkline
+│           ├── ScoreChart.jsx      # Anomaly score trend (ComposedChart)
+│           ├── RateChart.jsx       # Rolling anomaly rate (AreaChart)
+│           ├── AnomaliesPerMinute.jsx  # Per-minute bar chart
+│           ├── GaugeCard.jsx       # SVG arc gauge for latest score
+│           ├── TransactionTable.jsx # Live transaction feed table
+│           └── AlertsFeed.jsx      # Critical anomaly cards
 │
 ├── data/
-│   ├── anomalies.db            # SQLite database file
-│   ├── training_features.csv
-│   └── raw/ processed/         # Data directories
+│   └── anomalies.db            # SQLite database
 │
-├── scripts/
-│   ├── generate_training_data.py
-│   └── measure_anomaly_fraction.py
-│
-├── tests/                      # pytest test suite
-│   ├── test_feature_pipeline.py
-│   ├── test_predict.py
-│   ├── test_alert_manager.py
-│   ├── test_database.py
-│   ├── test_api_schemas.py
-│   └── test_consumer_persistence.py
-│
-├── examples/
-│   └── add_transactions_example.py
-│
-├── ARCHITECTURE_FLOW.md        # Detailed flow diagrams
-├── requirements.txt
-└── .devcontainer/              # GitHub Codespaces configuration
+├── tests/                      # pytest suite
+└── ARCHITECTURE_FLOW.md        # Detailed flow diagrams
 ```
 
 ---
@@ -116,242 +118,238 @@ Realtime-anomaly-engine/
 
 ### 1. Event Generation — `producer/event_generator.py`
 
-`EventGenerator` produces synthetic transaction dicts that mimic real Indian payment behavior:
+Generates synthetic Indian financial transactions with realistic fraud injection:
 
 | Field | Normal | Anomalous |
 |---|---|---|
-| `amount` | ₹50 – ₹5,000 (log-normal) | ₹50,000 – ₹2,00,000 |
-| `timestamp` | 30s – 5min inter-event gap (IST) | < 5s gap (stress burst) |
-| `user_id` | 2,000 simulated users | Same user, rapid repeats |
-| `merchant_id` | 300 merchants | — |
-| `location` | 15 major Indian cities | — |
+| `amount` | ₹50–₹5,000 (log-normal) | ₹50,000–₹2,00,000 |
+| `timestamp` | 30s–5min inter-event gap (IST) | < 5s gap (stress burst) |
+| Users | 2,000 simulated users | Same user, rapid repeats |
 
-Three anomaly injection mechanisms run simultaneously:
-- **Large-amount anomaly** — random ₹50k–₹2L transaction (~1% probability)
-- **Rapid-repeat burst** — same user fires 2–8 transactions within 1–30s (~0.7%)
-- **Stress burst** — realistic fraud pattern: same user, sub-5s gaps, amount 1.2–1.5× their recent mean (~1.8% start probability)
+Three fraud patterns: large-amount anomaly (~1%), rapid-repeat burst (~0.7%), stress burst (~1.8%).
 
 ### 2. Feature Engineering — `consumer/feature_pipeline.py`
 
-`FeaturePipeline` maintains in-memory per-user state and computes 4 features per event in O(1):
+O(1) per-user incremental features using in-memory deques:
 
 | Feature | Description |
 |---|---|
 | `transaction_amount` | Raw INR amount |
-| `rolling_mean_amount_per_user` | Cumulative mean amount for this user |
-| `transaction_count_last_1_min` | Sliding 60-second window count (deque) |
-| `time_since_last_transaction_seconds` | Seconds since this user's last event |
-
-These features are specifically chosen to capture the behavioral signals that distinguish fraud: spending amount vs. personal baseline, transaction velocity, and time gaps.
+| `rolling_mean_amount_per_user` | Cumulative mean for this user |
+| `transaction_count_last_1_min` | 60-second sliding window count |
+| `time_since_last_transaction_seconds` | Seconds since user's last event |
 
 ### 3. Anomaly Detection — `models/predict.py`
 
-`IsolationForestPredictor` wraps a scikit-learn `IsolationForest` saved with joblib:
+- `IsolationForest`: 50,000 training events, `n_estimators=200`, `contamination=0.01`
+- `score_samples()` is negated → larger score = more anomalous
+- Default threshold: `0.45` (`anomaly_score >= threshold` → flagged)
+- Feature order stored in `model.feature_names_in_` and enforced at inference
 
-- **Training**: 5,000 synthetic events, `n_estimators=200`, `contamination=0.01`
-- **Scoring**: `score_samples()` is negated so that **larger score = more anomalous**
-- **Threshold**: default `0.45` — events with `anomaly_score >= threshold` are flagged `is_anomaly=True`
-- **Feature order**: recorded in `model.feature_names_in_` at training time, enforced at inference
+### 4. Persistence — `storage/database.py`
 
-Retrain with:
-```bash
-python models/train_model.py --count 5000 --seed 42
-```
-
-### 4. Alert System — `alerts/alert_manager.py`
-
-`AlertManager` supports two independent alert types, configurable at startup:
-
-- **Score-based**: fires immediately when `anomaly_score >= score_threshold` (or `<=` with `score_trigger='below'`)
-- **Rate-based**: fires when the count of anomalies in a rolling time window exceeds `rate_limit`; scope is either `global` (all users) or `user` (per individual user)
-
-Alerts print to stdout with structured tags (`[ALERT][SCORE]`, `[ALERT][RATE][GLOBAL]`, etc.) and include the event payload for downstream routing to Slack, PagerDuty, or any webhook.
-
-### 5. Persistence — `storage/database.py`
-
-SQLite database with three linked tables:
+Every event (not just anomalies) is persisted in three linked SQLite tables:
 
 ```
-raw_events          features              anomalies
-──────────          ────────              ─────────
-id                  id                    id
-transaction_id      raw_event_id ─────┐   raw_event_id ─────┐
-event_json          features_json     │   anomaly_score      │
-timestamp           timestamp         │   is_anomaly         │
-                                      │   processed_ts       │
-                                      └── (FK → raw_events)  │
-                                                             └── (FK → raw_events)
+raw_events      features         anomalies
+──────────      ────────         ─────────
+transaction_id  raw_event_id     anomaly_score
+event_json      features_json    is_anomaly
+timestamp       timestamp        processed_timestamp
 ```
 
-`insert_processed_event()` writes all three rows in a single transaction. `fetch_recent_anomalies()` joins all three and supports `since_ts` filtering and result limiting.
-
-### 6. REST API — `api/main.py`
-
-FastAPI app exposing:
+### 5. REST API — `api/main.py`
 
 | Endpoint | Description |
 |---|---|
-| `GET /` | Health check — returns `{"status": "ok"}` |
-| `GET /anomalies?limit=50&since_ts=<ISO8601>` | Recent anomalies from SQLite, newest first |
+| `GET /` | Health check |
+| `GET /anomalies?limit=50&since_ts=<ISO8601>` | Recent anomalies from SQLite |
+| `WS /ws/anomalies` | Live scored-events broadcast |
 
-Run with:
-```bash
-uvicorn api.main:app --reload --port 8000
-```
+### 6. WebSocket Broadcast — `api/websocket.py`
 
-### 7. Dashboard — `dashboard/app.py`
+`ConnectionManager` maintains a set of active WebSocket clients. An `aiokafka` background coroutine (started in FastAPI's `lifespan`) drains `scored-events` and calls `manager.broadcast(msg)` — all on the same asyncio event loop, no thread-bridging. Dead clients are pruned on each broadcast.
 
-Production-style dark analytics UI built with Streamlit and Plotly. Auto-refreshes every second via `st.rerun()`.
+### 7. React Dashboard — `frontend/`
 
-**KPI Cards (always visible):**
-- Total Events processed
-- Anomalies Detected (colored red when non-zero)
-- Anomaly Rate % (green < 5%, amber < 15%, red ≥ 15%)
-- Risk Level (LOW / MEDIUM / HIGH)
-
-**Charts:**
-- Anomaly Score Trend — scatter + line, red diamonds for flagged events, threshold line at 0.5
-- Rolling Anomaly Rate — 10-event window area chart
-- Anomalies Per Minute — bar chart, last 15 minutes
-- Anomaly Score Gauge — needle gauge for the latest event's score
-- Event Frequency and Inter-arrival Time — pattern analysis charts
-- Activity Donut — breakdown of normal vs. anomalous vs. pending events
-
-**Transaction Feed:**
-- Live table of last 50 events (deque), anomalous rows highlighted in red
-- Critical Anomalies Feed — card-style list with severity (CRITICAL / HIGH / MEDIUM) and human-readable explanations derived from feature values
-
-When no real data is present, the dashboard renders "ghost" placeholder data so the UI is never empty and the layout is always clear.
+- Dark navy + purple theme (Tailwind, Inter font)
+- **KPI cards** with mini sparklines: Total Events, Anomalies, Rate, Risk Level
+- **Charts**: Anomaly Score Trend, Rolling Rate, Anomalies Per Minute, SVG Gauge
+- **Transaction table**: last 50 events, INR-formatted, anomaly rows highlighted red
+- **Alerts feed**: CRITICAL / HIGH / MEDIUM cards with feature explanations
+- WebSocket hook auto-reconnects on close/error (2.5s backoff)
+- On load: fetches `GET /anomalies` for historical context, then transitions to live WS stream
 
 ---
 
-## Data Flow
+## Scored-Events Message Schema
 
-```
-EventGenerator.generate_transaction()
-        │
-        ▼  {transaction_id, user_id, amount, timestamp, merchant_id, location}
-FeaturePipeline.process_event(event)
-        │
-        ▼  {transaction_amount, rolling_mean_amount_per_user,
-        │   transaction_count_last_1_min, time_since_last_transaction_seconds}
-IsolationForestPredictor.predict(features)
-        │
-        ▼  (anomaly_score: float, is_anomaly: bool)
-        │
-        ├──▶ AlertManager.check_and_alert()        [console alerts]
-        ├──▶ storage.insert_processed_event()      [SQLite]
-        └──▶ dashboard.add_transaction_to_stream() [live UI session state]
+Published to Kafka `scored-events` and broadcast over WebSocket:
+
+```json
+{
+  "schema_version": 1,
+  "transaction_id": "uuid",
+  "user_id": "user_001234",
+  "amount": 87432.50,
+  "timestamp": "2025-01-24T10:30:00+05:30",
+  "processed_timestamp": "2025-01-24T05:00:00+00:00",
+  "anomaly_score": 0.7312,
+  "is_anomaly": true,
+  "explanation": ["very small time_since_last_transaction_seconds", "unusually high transaction_count_last_1_min"],
+  "features": {
+    "transaction_amount": 87432.5,
+    "rolling_mean_amount_per_user": 1240.8,
+    "transaction_count_last_1_min": 7,
+    "time_since_last_transaction_seconds": 1.2
+  },
+  "event": { "transaction_id": "...", "user_id": "...", "amount": 87432.5, "..." : "..." },
+  "anomaly_row_id": 1042
+}
 ```
 
 ---
 
 ## Quickstart
 
-### Requirements
+### Prerequisites
 
-```
-Python 3.11+
-numpy, pandas, scikit-learn, joblib
-fastapi, uvicorn
-streamlit, plotly, requests
-pytest
-```
+- Python 3.11+
+- Docker + Docker Compose (for Kafka)
+- Node.js 18+ (for the React frontend)
 
-Install:
+### 1. Install Python dependencies
+
 ```bash
 pip install -r requirements.txt
 ```
 
-### 1. Train the model
+### 2. Start Kafka
 
 ```bash
-python models/train_model.py --count 5000 --seed 42
+docker compose up -d
 ```
 
-### 2. Run the consumer
-
-Generates events, scores them with the model, and prints results:
+Wait ~15 seconds for the broker to become healthy and topics to be created. Verify:
 
 ```bash
-python consumer/consumer.py --count 50 --interval 0.5
+docker compose exec kafka /opt/kafka/bin/kafka-topics.sh --list --bootstrap-server localhost:9092
+# transactions
+# scored-events
 ```
 
-With alerts enabled:
+### 3. Train the model
+
 ```bash
-python consumer/consumer.py \
-  --count 50 \
-  --alert-score-threshold 0.6 \
-  --rate-limit 5 \
-  --rate-window 60 \
-  --rate-scope user
+python models/train_model.py --count 50000 --seed 42
 ```
 
-### 3. Start the API
+### 4. Start the consumer (Terminal A)
 
 ```bash
-uvicorn api.main:app --reload --port 8000
+python consumer/consumer.py
+# Connects to Kafka, waits for events, scores and persists each one
 ```
 
-### 4. Start the dashboard
+### 5. Start the producer (Terminal B)
 
 ```bash
-streamlit run dashboard/app.py
+python producer/producer.py --interval 0.5
+# Generates and publishes synthetic transactions to Kafka
 ```
 
-The dashboard connects to the API at `http://127.0.0.1:8000` by default. Override via `API_URL` in Streamlit secrets.
-
-### 5. Run tests
+### 6. Start the API (Terminal C)
 
 ```bash
-pytest
+uvicorn api.main:app --port 8000
+```
+
+### 7. Start the React dashboard (Terminal D)
+
+```bash
+cd frontend
+npm install
+npm run dev
+# Opens at http://localhost:3000
 ```
 
 ---
 
-## Codespaces / Dev Container
+## Deploy to Vercel
 
-The repo includes `.devcontainer/devcontainer.json` for GitHub Codespaces. Opening the repo in Codespaces will:
-1. Install all Python dependencies automatically
-2. Launch the Streamlit dashboard on port 8501 with auto-preview
+The frontend is a standard Vite SPA — Vercel deploys it with zero config.
+
+```bash
+cd frontend
+npm run build          # outputs to frontend/dist/
+```
+
+Set environment variables in Vercel:
+
+```
+VITE_API_URL=https://your-api-host.com
+VITE_WS_URL=wss://your-api-host.com/ws/anomalies
+```
+
+The FastAPI backend can be deployed to Railway, Fly.io, or any container host. Kafka can be replaced by Confluent Cloud (change `KAFKA_BOOTSTRAP_SERVERS`).
 
 ---
 
 ## Configuration Reference
 
-### `consumer.py` CLI flags
+All values are read from environment variables:
+
+| Env var | Default | Description |
+|---|---|---|
+| `KAFKA_BOOTSTRAP_SERVERS` | `localhost:9092` | Kafka broker address |
+| `KAFKA_TOPIC_TRANSACTIONS` | `transactions` | Input topic |
+| `KAFKA_TOPIC_SCORED` | `scored-events` | Output topic |
+| `KAFKA_GROUP_SCORING` | `scoring-consumer` | Consumer group for the scorer |
+| `KAFKA_GROUP_API` | `api-ws-broadcaster` | Consumer group for the API broadcaster |
+| `ANOMALY_DB_PATH` | `data/anomalies.db` | SQLite path |
+| `API_HOST` | `0.0.0.0` | Uvicorn bind host |
+| `API_PORT` | `8000` | Uvicorn bind port |
+
+### Consumer CLI flags
 
 | Flag | Default | Description |
 |---|---|---|
-| `--count` | 50 | Number of events to process |
-| `--interval` | 1.0 | Seconds between events |
-| `--seed` | None | RNG seed for reproducibility |
-| `--model-path` | `models/isolation_forest.joblib` | Path to model file |
-| `--threshold` | 0.45 | Anomaly score cutoff |
+| `--source` | `kafka` | `kafka` or `generator` (offline/test) |
+| `--threshold` | `0.45` | Anomaly score cutoff |
+| `--db-path` | from env | SQLite path |
+| `--fill-missing-with-zero` | off | Default failed features to 0 instead of skipping |
 | `--alert-score-threshold` | None | Score alert threshold |
-| `--alert-score-trigger` | `above` | `above` or `below` |
-| `--rate-limit` | 10 | Max anomalies before rate alert fires |
-| `--rate-window` | 60 | Rate window in seconds |
+| `--rate-limit` | `10` | Anomalies per window before rate alert |
 | `--rate-scope` | `global` | `global` or `user` |
 
-### `train_model.py` CLI flags
+### Producer CLI flags
 
 | Flag | Default | Description |
 |---|---|---|
-| `--count` | 5000 | Training sample size |
-| `--seed` | None | RNG seed |
-| `--output` | `models/isolation_forest.joblib` | Output path |
+| `--sink` | `kafka` | `kafka` or `stdout` |
+| `--interval` | `1.0` | Seconds between events |
+| `--count` | `0` | Events to emit (0 = infinite) |
+
+---
+
+## Running Tests
+
+```bash
+pytest
+```
+
+All tests run broker-free. The persistence test uses `--source generator` mode to stay CI-compatible.
 
 ---
 
 ## Key Design Decisions
 
-- **Unsupervised model** — Isolation Forest requires no fraud labels, making it practical for new payment systems where labeled data does not yet exist.
-- **Per-user incremental state** — `FeaturePipeline` uses deques and running sums to compute features in O(1) per event with no batch lookback.
-- **In-memory stream buffer** — Dashboard keeps last 50 transactions in a `deque(maxlen=50)` (~25 KB), enabling instant UI updates without database polling on every render.
-- **SQLite over external DB** — Zero infrastructure dependency for local development and demos; the storage layer can be swapped for Postgres or BigQuery by replacing `database.py`.
-- **Ghost data** — Dashboard renders visually consistent placeholder data when no events have been ingested, so the UI communicates intent without requiring the full pipeline to be running.
-- **Feature order enforcement** — The trained model stores `feature_names_in_` and inference is always done through a `DataFrame` with named columns, preventing silent feature misalignment bugs.
+- **Kafka by default** — producer and consumer default to Kafka so the system behaves like a real financial feed; `--sink stdout` / `--source generator` are offline fallbacks.
+- **User-keyed partitions** — both topics are keyed by `user_id`, preserving per-user ordering for the stateful `FeaturePipeline`.
+- **Every event persisted** — all events (not just anomalies) are written to SQLite so the REST `/anomalies` endpoint has full context.
+- **aiokafka on the API loop** — the Kafka consumer in the API is a native asyncio coroutine, so it never blocks WebSocket sends or REST handlers.
+- **React replaces Streamlit** — native browser WebSocket eliminates all the threading hacks Streamlit requires for real-time push; the frontend is a standard Vite SPA deployable to Vercel.
+- **Unsupervised model** — Isolation Forest requires no fraud labels; it learns the shape of normal behavior from 50k synthetic events.
 
 ---
 
