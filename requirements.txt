@@ -6,14 +6,15 @@ joblib
 
 # Backend
 fastapi
-uvicorn
+uvicorn[standard]
 
-# Dashboard
-streamlit
-requests
+# Kafka (sync clients for producer/consumer; async client for FastAPI)
+kafka-python>=2.0.2
+aiokafka>=0.10.0
 
 # Testing
 pytest
+pytest-asyncio
 
 # Utilities
 python-dateutil

@@ -1,70 +1,116 @@
-"""Simple producer script that continuously generates and prints transactions.
+"""Synthetic transaction producer.
 
-- Initializes `EventGenerator` once
-- Continuously generates events in a loop and prints them (JSON)
-- Controls event rate via `time.sleep(interval)`
-- Supports graceful shutdown with KeyboardInterrupt (Ctrl+C)
+Generates real-time transaction events and publishes them to either:
+  - Apache Kafka topic `transactions` (default — acts as a real financial feed)
+  - stdout as JSON (fallback for offline demos, use --sink stdout)
 
 Usage:
-    python producer/producer.py --interval 1.0
-
-Keep the script minimal and dependency-free (uses stdlib only).
+    python producer/producer.py                        # Kafka (default)
+    python producer/producer.py --sink stdout          # stdout only
+    python producer/producer.py --interval 0.5 --count 100
 """
 from __future__ import annotations
 
 import argparse
 import json
+import sys
+import os
 import time
 from typing import Optional
 
+# Robust import so the script works both as a module and as a direct script
 try:
-    # Prefer package-style import when available (run as module)
     from producer.event_generator import EventGenerator
+    import config
 except Exception:
-    # When executed directly as a script (python producer/producer.py),
-    # package imports may fail; add project root to sys.path and retry.
-    import os
-    import sys
-
     repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
     if repo_root not in sys.path:
         sys.path.insert(0, repo_root)
-    # Load the module directly from file location to avoid package import issues
-    import importlib.util
+    from producer.event_generator import EventGenerator
+    import config
 
-    module_path = os.path.join(repo_root, "producer", "event_generator.py")
-    spec = importlib.util.spec_from_file_location("producer.event_generator", module_path)
-    if spec is None or spec.loader is None:
-        raise ImportError("Could not load producer.event_generator module")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    EventGenerator = mod.EventGenerator
+
+def _build_kafka_producer(bootstrap_servers: str):
+    """Construct and return a KafkaProducer (lazy import — not needed for stdout mode)."""
+    from kafka import KafkaProducer  # type: ignore[import]
+
+    return KafkaProducer(
+        bootstrap_servers=bootstrap_servers,
+        value_serializer=lambda v: json.dumps(v, ensure_ascii=False).encode("utf-8"),
+        key_serializer=lambda k: k.encode("utf-8") if k else None,
+        # Reasonable defaults for a low-latency demo
+        linger_ms=5,
+        acks="all",
+        retries=3,
+    )
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Continuous synthetic transaction producer")
-    parser.add_argument("--interval", type=float, default=1.0, help="Seconds to sleep between events (float)")
-    parser.add_argument("--seed", type=int, default=None, help="Optional RNG seed for deterministic output")
-    parser.add_argument("--count", type=int, default=0, help="Number of events to emit (0 means infinite)")
+    parser = argparse.ArgumentParser(description="Synthetic transaction producer")
+    parser.add_argument(
+        "--sink",
+        choices=["kafka", "stdout"],
+        default="kafka",
+        help="Where to send events: 'kafka' (default) or 'stdout'",
+    )
+    parser.add_argument(
+        "--bootstrap-servers",
+        default=config.KAFKA_BOOTSTRAP_SERVERS,
+        help=f"Kafka bootstrap servers (default: {config.KAFKA_BOOTSTRAP_SERVERS})",
+    )
+    parser.add_argument(
+        "--topic",
+        default=config.TOPIC_TRANSACTIONS,
+        help=f"Kafka topic to publish to (default: {config.TOPIC_TRANSACTIONS})",
+    )
+    parser.add_argument("--interval", type=float, default=1.0, help="Seconds between events")
+    parser.add_argument("--seed", type=int, default=None, help="Optional RNG seed")
+    parser.add_argument("--count", type=int, default=0, help="Events to emit (0 = infinite)")
     args = parser.parse_args()
 
-    # Initialize generator once (fast, lightweight)
     gen = EventGenerator(seed=args.seed)
 
-    print(f"Starting producer: interval={args.interval}s, count={'infinite' if args.count<=0 else args.count}")
+    # ── Build the appropriate sink ─────────────────────────────────────────────
+    kafka_producer = None
+    if args.sink == "kafka":
+        print(f"Connecting to Kafka at {args.bootstrap_servers}, topic={args.topic} …", flush=True)
+        try:
+            kafka_producer = _build_kafka_producer(args.bootstrap_servers)
+            print("Kafka producer ready.", flush=True)
+        except Exception as exc:
+            print(f"[ERROR] Could not connect to Kafka: {exc}", file=sys.stderr)
+            print("Tip: run `docker compose up -d` first, or use --sink stdout", file=sys.stderr)
+            sys.exit(1)
+
+    def emit(event: dict) -> None:
+        if kafka_producer is not None:
+            kafka_producer.send(args.topic, key=event.get("user_id"), value=event)
+        else:
+            print(json.dumps(event, ensure_ascii=False), flush=True)
+
+    print(
+        f"Starting producer: sink={args.sink}, interval={args.interval}s, "
+        f"count={'infinite' if args.count <= 0 else args.count}",
+        flush=True,
+    )
     emitted = 0
 
     try:
         while args.count <= 0 or emitted < args.count:
             event = gen.generate_transaction()
-            # Print JSON for readability / downstream piping
-            print(json.dumps(event, ensure_ascii=False))
+            emit(event)
             emitted += 1
+            if args.sink == "stdout":
+                # Echo to console in stdout mode so the user sees events
+                pass  # already printed inside emit
             time.sleep(max(0.0, float(args.interval)))
     except KeyboardInterrupt:
-        print("\nKeyboardInterrupt received — shutting down producer gracefully.")
+        print("\nKeyboardInterrupt — shutting down producer gracefully.", flush=True)
     finally:
-        print(f"Producer stopped after emitting {emitted} events.")
+        if kafka_producer is not None:
+            kafka_producer.flush()
+            kafka_producer.close()
+        print(f"Producer stopped after emitting {emitted} events.", flush=True)
 
 
 if __name__ == "__main__":

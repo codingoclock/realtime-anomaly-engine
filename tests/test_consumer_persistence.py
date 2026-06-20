@@ -16,6 +16,8 @@ def test_consumer_writes_db(tmp_path: Path):
     cmd = [
         sys.executable,
         "consumer/consumer.py",
+        "--source",
+        "generator",
         "--interval",
         "0.01",
         "--count",

@@ -27,9 +27,9 @@ def test_predict_from_vector(tmp_path: Path):
     vec = [0.0, 0.0]
     score, flag = predictor.predict(vec, threshold=0.0)
 
-    # Compute expected raw and assert sign interpretation
+    # Compute expected raw using score_samples (predictor negates this)
     model = joblib.load(path)
-    raw = model.decision_function([vec])
+    raw = model.score_samples([vec])
     expected_score = -float(raw.item())
     assert np.isclose(score, expected_score)
     assert flag == (score >= 0.0)
@@ -47,7 +47,7 @@ def test_predict_from_dict_with_model_feature_names(tmp_path: Path):
     # Ensure vectorization follows model.feature_names_in_
     v = np.asarray([sample[n] for n in predictor.feature_order], dtype=float)
     model = joblib.load(path)
-    expected = -float(model.decision_function(np.atleast_2d(v)).item())
+    expected = -float(model.score_samples(np.atleast_2d(v)).item())
     assert np.isclose(score, expected)
 
 
